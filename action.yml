@@ -1,0 +1,245 @@
+name: M6D Preview
+description: Build, deploy, verify, announce, and tear down pull-request previews.
+
+inputs:
+  images:
+    description: JSON array of image definitions used for preview builds.
+    required: false
+    default: '[]'
+  project:
+    description: CI project identifier when it differs from the repository name.
+    required: false
+    default: ''
+  registry:
+    description: Container registry passed to docker login.
+    required: false
+    default: docker.io
+  registry-username:
+    description: Container registry username. Required for preview creation.
+    required: false
+    default: ''
+  registry-password:
+    description: Container registry password or token. Required for preview creation.
+    required: false
+    default: ''
+  ssh-host:
+    description: Preview server hostname or address.
+    required: true
+  ssh-username:
+    description: Preview server SSH username.
+    required: true
+  ssh-key:
+    description: Preview server SSH private key.
+    required: true
+  ssh-port:
+    description: Preview server SSH port.
+    required: false
+    default: '22'
+  command-timeout:
+    description: Maximum duration of a remote CI command.
+    required: false
+    default: 10m
+  health-timeout-seconds:
+    description: Maximum time to wait for the preview URL.
+    required: false
+    default: '120'
+
+runs:
+  using: composite
+  steps:
+    - name: Validate preview context
+      shell: bash
+      env:
+        M6D_EVENT_NAME: ${{ github.event_name }}
+        M6D_EVENT_ACTION: ${{ github.event.action }}
+        M6D_PROJECT: ${{ inputs.project || github.event.repository.name }}
+        M6D_PR_NUMBER: ${{ github.event.pull_request.number }}
+        M6D_REGISTRY_USERNAME: ${{ inputs.registry-username }}
+        M6D_REGISTRY_PASSWORD: ${{ inputs.registry-password }}
+        M6D_SSH_HOST: ${{ inputs.ssh-host }}
+        M6D_SSH_USERNAME: ${{ inputs.ssh-username }}
+        M6D_SSH_KEY: ${{ inputs.ssh-key }}
+        M6D_SSH_PORT: ${{ inputs.ssh-port }}
+        M6D_HEALTH_TIMEOUT_SECONDS: ${{ inputs.health-timeout-seconds }}
+      run: |
+        set -euo pipefail
+
+        [[ "$M6D_EVENT_NAME" == pull_request ]] || {
+          echo "::error::M6D Preview only supports pull_request events"
+          exit 1
+        }
+
+        case "$M6D_EVENT_ACTION" in
+          opened|synchronize|reopened|closed) ;;
+          *)
+            echo "::error::Unsupported pull_request action: $M6D_EVENT_ACTION"
+            exit 1
+            ;;
+        esac
+
+        [[ "$M6D_PROJECT" =~ ^[A-Za-z0-9._-]+$ ]] || {
+          echo "::error::project may only contain letters, numbers, dots, underscores, and hyphens"
+          exit 1
+        }
+        [[ "$M6D_PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || {
+          echo "::error::Could not derive a valid pull-request number"
+          exit 1
+        }
+        [[ "$M6D_SSH_PORT" =~ ^[1-9][0-9]*$ ]] || {
+          echo "::error::ssh-port must be a positive integer"
+          exit 1
+        }
+        [[ "$M6D_HEALTH_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || {
+          echo "::error::health-timeout-seconds must be a positive integer"
+          exit 1
+        }
+
+        for value in M6D_SSH_HOST M6D_SSH_USERNAME M6D_SSH_KEY; do
+          [[ -n "${!value}" ]] || {
+            echo "::error::$value is required"
+            exit 1
+          }
+        done
+
+        if [[ "$M6D_EVENT_ACTION" != closed ]]; then
+          [[ -n "$M6D_REGISTRY_USERNAME" && -n "$M6D_REGISTRY_PASSWORD" ]] || {
+            echo "::error::registry-username and registry-password are required for preview creation"
+            exit 1
+          }
+        fi
+
+    - name: Check out pull request
+      if: github.event.action != 'closed'
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+    - name: Set up Docker Buildx
+      if: github.event.action != 'closed'
+      uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+    - name: Log in to container registry
+      if: github.event.action != 'closed'
+      uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+      with:
+        registry: ${{ inputs.registry }}
+        username: ${{ inputs.registry-username }}
+        password: ${{ inputs.registry-password }}
+
+    - name: Build and push images
+      if: github.event.action != 'closed'
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      env:
+        M6D_ACTION_PATH: ${{ github.action_path }}
+        M6D_IMAGES: ${{ inputs.images }}
+        M6D_IMAGE_TAG: pr-${{ github.event.pull_request.number }}-${{ github.sha }}
+      with:
+        github-token: ${{ github.token }}
+        script: |
+          const buildImages = require(`${process.env.M6D_ACTION_PATH}/src/build-images.cjs`);
+          await buildImages({
+            core,
+            exec,
+            imagesJson: process.env.M6D_IMAGES,
+            tag: process.env.M6D_IMAGE_TAG
+          });
+
+    - name: Deploy preview
+      if: github.event.action != 'closed'
+      uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
+      env:
+        M6D_PROJECT: ${{ inputs.project || github.event.repository.name }}
+        M6D_PR_NUMBER: ${{ github.event.pull_request.number }}
+        M6D_IMAGE_TAG: pr-${{ github.event.pull_request.number }}-${{ github.sha }}
+      with:
+        host: ${{ inputs.ssh-host }}
+        port: ${{ inputs.ssh-port }}
+        username: ${{ inputs.ssh-username }}
+        key: ${{ inputs.ssh-key }}
+        command_timeout: ${{ inputs.command-timeout }}
+        version: 1.8.4
+        envs: M6D_PROJECT,M6D_PR_NUMBER,M6D_IMAGE_TAG
+        script: |
+          set -e
+          cd "$HOME/ci"
+          "$HOME/.bun/bin/bun" src/index.ts setup "$M6D_PROJECT" "$M6D_PR_NUMBER" "$M6D_IMAGE_TAG"
+
+    - name: Wait for preview health
+      if: github.event.action != 'closed'
+      shell: bash
+      env:
+        M6D_PREVIEW_URL: https://pr-${{ github.event.pull_request.number }}.${{ inputs.project || github.event.repository.name }}.syscodeia.ae
+        M6D_HEALTH_TIMEOUT_SECONDS: ${{ inputs.health-timeout-seconds }}
+      run: |
+        set -euo pipefail
+        deadline=$((SECONDS + M6D_HEALTH_TIMEOUT_SECONDS))
+
+        until curl --fail --silent --location --max-time 5 "$M6D_PREVIEW_URL" >/dev/null; do
+          if (( SECONDS >= deadline )); then
+            echo "::error::Preview did not become healthy within $M6D_HEALTH_TIMEOUT_SECONDS seconds: $M6D_PREVIEW_URL"
+            exit 1
+          fi
+          sleep 5
+        done
+
+    - name: Announce preview
+      if: github.event.action != 'closed'
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      env:
+        M6D_PROJECT: ${{ inputs.project || github.event.repository.name }}
+        M6D_PR_NUMBER: ${{ github.event.pull_request.number }}
+        M6D_IMAGE_TAG: pr-${{ github.event.pull_request.number }}-${{ github.sha }}
+        M6D_PREVIEW_URL: https://pr-${{ github.event.pull_request.number }}.${{ inputs.project || github.event.repository.name }}.syscodeia.ae
+      with:
+        github-token: ${{ github.token }}
+        script: |
+          const marker = `<!-- m6d-preview:${process.env.M6D_PROJECT} -->`;
+          const body = `${marker}
+          🚀 **Preview ready**
+
+          [Open ${process.env.M6D_PROJECT} preview](${process.env.M6D_PREVIEW_URL})
+
+          Image tag: \`${process.env.M6D_IMAGE_TAG}\``;
+          const issue_number = Number(process.env.M6D_PR_NUMBER);
+          const comments = await github.paginate(github.rest.issues.listComments, {
+            ...context.repo,
+            issue_number
+          });
+          const existing = comments.find(comment =>
+            comment.user?.type === 'Bot' && comment.body?.includes(marker)
+          );
+
+          if (existing) {
+            await github.rest.issues.updateComment({
+              ...context.repo,
+              comment_id: existing.id,
+              body
+            });
+          } else {
+            await github.rest.issues.createComment({
+              ...context.repo,
+              issue_number,
+              body
+            });
+          }
+
+    - name: Tear down preview
+      if: github.event.action == 'closed'
+      uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
+      env:
+        M6D_PROJECT: ${{ inputs.project || github.event.repository.name }}
+        M6D_PR_NUMBER: ${{ github.event.pull_request.number }}
+      with:
+        host: ${{ inputs.ssh-host }}
+        port: ${{ inputs.ssh-port }}
+        username: ${{ inputs.ssh-username }}
+        key: ${{ inputs.ssh-key }}
+        command_timeout: ${{ inputs.command-timeout }}
+        version: 1.8.4
+        envs: M6D_PROJECT,M6D_PR_NUMBER
+        script: |
+          set -e
+          cd "$HOME/ci"
+          "$HOME/.bun/bin/bun" src/index.ts teardown "$M6D_PROJECT" "$M6D_PR_NUMBER"
+
+branding:
+  icon: box
+  color: purple
