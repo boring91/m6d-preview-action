@@ -134,7 +134,7 @@ runs:
       with:
         github-token: ${{ github.token }}
         script: |
-          const buildImages = require(`${process.env.M6D_ACTION_PATH}/src/build-images.cjs`);
+          const { buildImages } = require(`${process.env.M6D_ACTION_PATH}/dist/build-images.js`);
           await buildImages({
             core,
             exec,

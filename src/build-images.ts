@@ -1,7 +1,28 @@
-const assert = require('node:assert/strict');
+import { deepEqual } from 'node:assert/strict';
 
-function buildPlan(imagesJson, tag) {
-  let images;
+type Core = {
+  startGroup(name: string): void;
+  endGroup(): void;
+};
+
+type Exec = {
+  exec(commandLine: string, args?: string[]): Promise<number>;
+};
+
+type BuildImagesOptions = {
+  core: Core;
+  exec: Exec;
+  imagesJson: string;
+  tag: string;
+};
+
+type BuildPlanItem = {
+  name: string;
+  args: string[];
+};
+
+export function buildPlan(imagesJson: string, tag: string): BuildPlanItem[] {
+  let images: unknown;
 
   try {
     images = JSON.parse(imagesJson);
@@ -16,11 +37,12 @@ function buildPlan(imagesJson, tag) {
     throw new Error('image tag must contain a pull-request number and commit SHA');
   }
 
-  return images.map((image, index) => {
-    if (!image || typeof image !== 'object' || Array.isArray(image)) {
+  return images.map((value, index) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
       throw new Error(`images[${index}] must be an object`);
     }
 
+    const image = value as Record<string, unknown>;
     for (const field of ['name', 'image', 'context', 'dockerfile']) {
       if (typeof image[field] !== 'string' || image[field].trim() === '') {
         throw new Error(`images[${index}].${field} must be a non-empty string`);
@@ -30,26 +52,36 @@ function buildPlan(imagesJson, tag) {
       throw new Error(`images[${index}].build_args must be a string`);
     }
 
+    const name = image.name as string;
+    const repository = image.image as string;
+    const context = image.context as string;
+    const dockerfile = image.dockerfile as string;
+    const buildArgs = (image.build_args as string | undefined) ?? '';
     const args = [
       'buildx',
       'build',
       '--file',
-      image.dockerfile,
+      dockerfile,
       '--tag',
-      `${image.image}:${tag}`,
+      `${repository}:${tag}`,
       '--push'
     ];
 
-    for (const buildArg of (image.build_args || '').split(/\r?\n/).map(value => value.trim()).filter(Boolean)) {
+    for (const buildArg of buildArgs.split(/\r?\n/).map(value => value.trim()).filter(Boolean)) {
       args.push('--build-arg', buildArg);
     }
 
-    args.push(image.context);
-    return { name: image.name, args };
+    args.push(context);
+    return { name, args };
   });
 }
 
-async function buildImages({ core, exec, imagesJson, tag }) {
+export async function buildImages({
+  core,
+  exec,
+  imagesJson,
+  tag
+}: BuildImagesOptions): Promise<void> {
   for (const image of buildPlan(imagesJson, tag)) {
     core.startGroup(`Build ${image.name}`);
     try {
@@ -60,12 +92,9 @@ async function buildImages({ core, exec, imagesJson, tag }) {
   }
 }
 
-module.exports = buildImages;
-module.exports.buildPlan = buildPlan;
-
-if (require.main === module) {
+if (process.argv[1] === __filename) {
   const tag = `pr-42-${'a'.repeat(40)}`;
-  assert.deepEqual(
+  deepEqual(
     buildPlan(
       JSON.stringify([
         {

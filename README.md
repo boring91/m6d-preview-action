@@ -82,8 +82,11 @@ Use `@main` while developing the action. Pin production consumers to a release t
 
 ## Verification
 
-Run the dependency-free build planner check:
+Install dependencies, compile the TypeScript source, and run the build planner check:
 
 ```bash
-node src/build-images.cjs
+npm ci
+npm test
 ```
+
+Compiled files in `dist/` are committed so consumers can run the action without installing dependencies.
