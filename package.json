@@ -1,0 +1,13 @@
+{
+  "name": "m6d-preview-action",
+  "private": true,
+  "scripts": {
+    "build": "rm -rf dist && tsc",
+    "test": "npm run build && node dist/build-images.js",
+    "check": "npm test && git diff --exit-code -- dist"
+  },
+  "devDependencies": {
+    "@types/node": "26.2.0",
+    "typescript": "7.0.2"
+  }
+}
