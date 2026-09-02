@@ -35,26 +35,32 @@ function buildPlan(imagesJson, tag) {
         const context = image.context;
         const dockerfile = image.dockerfile;
         const buildArgs = image.build_args ?? '';
+        const taggedImage = `${repository}:${tag}`;
         const args = [
             'buildx',
             'build',
             '--file',
             dockerfile,
             '--tag',
-            `${repository}:${tag}`,
+            taggedImage,
             '--push'
         ];
         for (const buildArg of buildArgs.split(/\r?\n/).map(value => value.trim()).filter(Boolean)) {
             args.push('--build-arg', buildArg);
         }
         args.push(context);
-        return { name, args };
+        return { name, image: taggedImage, args };
     });
 }
 async function buildImages({ core, exec, imagesJson, tag }) {
     for (const image of buildPlan(imagesJson, tag)) {
         core.startGroup(`Build ${image.name}`);
         try {
+            const exists = await exec.exec('docker', ['buildx', 'imagetools', 'inspect', image.image], { ignoreReturnCode: true, silent: true });
+            if (exists === 0) {
+                core.info(`Reusing ${image.image}`);
+                continue;
+            }
             await exec.exec('docker', image.args);
         }
         finally {
@@ -75,6 +81,7 @@ if (process.argv[1] === __filename) {
     ]), tag), [
         {
             name: 'web',
+            image: `acme/web:${tag}`,
             args: [
                 'buildx',
                 'build',
@@ -91,4 +98,23 @@ if (process.argv[1] === __filename) {
             ]
         }
     ]);
+    const commands = [];
+    void buildImages({
+        core: { startGroup() { }, endGroup() { }, info() { } },
+        exec: {
+            async exec(_command, args) {
+                commands.push(args ?? []);
+                return 0;
+            }
+        },
+        imagesJson: JSON.stringify([
+            {
+                name: 'web',
+                image: 'acme/web',
+                context: './web',
+                dockerfile: './web/Dockerfile'
+            }
+        ]),
+        tag
+    }).then(() => (0, strict_1.deepEqual)(commands, [['buildx', 'imagetools', 'inspect', `acme/web:${tag}`]]));
 }
