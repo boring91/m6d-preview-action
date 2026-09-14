@@ -166,7 +166,7 @@ runs:
       if: github.event.action != 'closed'
       shell: bash
       env:
-        M6D_PREVIEW_URL: https://pr-${{ github.event.pull_request.number }}.${{ inputs.project || github.event.repository.name }}.syscodeia.ae
+        M6D_PREVIEW_URL: https://pr-${{ github.event.pull_request.number }}-${{ inputs.project || github.event.repository.name }}.ci.syscodeia.ae
         M6D_HEALTH_TIMEOUT_SECONDS: ${{ inputs.health-timeout-seconds }}
       run: |
         set -euo pipefail
@@ -187,7 +187,7 @@ runs:
         M6D_PROJECT: ${{ inputs.project || github.event.repository.name }}
         M6D_PR_NUMBER: ${{ github.event.pull_request.number }}
         M6D_IMAGE_TAG: pr-${{ github.event.pull_request.number }}-${{ github.sha }}
-        M6D_PREVIEW_URL: https://pr-${{ github.event.pull_request.number }}.${{ inputs.project || github.event.repository.name }}.syscodeia.ae
+        M6D_PREVIEW_URL: https://pr-${{ github.event.pull_request.number }}-${{ inputs.project || github.event.repository.name }}.ci.syscodeia.ae
       with:
         github-token: ${{ github.token }}
         script: |
