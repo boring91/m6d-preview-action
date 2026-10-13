@@ -108,6 +108,67 @@ runs:
           }
         fi
 
+    - name: Tear down preview
+      if: github.event.action == 'closed'
+      uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
+      env:
+        M6D_PROJECT: ${{ inputs.project || github.event.repository.name }}
+        M6D_PR_NUMBER: ${{ github.event.pull_request.number }}
+      with:
+        host: ${{ inputs.ssh-host }}
+        port: ${{ inputs.ssh-port }}
+        username: ${{ inputs.ssh-username }}
+        key: ${{ inputs.ssh-key }}
+        command_timeout: ${{ inputs.command-timeout }}
+        version: 1.8.4
+        envs: M6D_PROJECT,M6D_PR_NUMBER
+        script: |
+          set -e
+          cd "$HOME/ci"
+          "$HOME/.bun/bin/bun" src/index.ts teardown "$M6D_PROJECT" "$M6D_PR_NUMBER"
+
+    # GitHub skips pull_request workflows while a pull request has merge
+    # conflicts, so a conflicted pull request closes without a teardown run.
+    # Every run therefore also removes the previews other closed pull requests
+    # left behind.
+    - name: Find open pull requests
+      id: open-prs
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      with:
+        github-token: ${{ github.token }}
+        script: |
+          const open = await github.paginate(github.rest.pulls.list, {
+            ...context.repo,
+            state: 'open',
+            per_page: 100
+          });
+          const numbers = [...open.map(pr => pr.number), context.payload.pull_request.number];
+          core.setOutput('numbers', numbers.join(' '));
+
+    - name: Tear down leftover previews
+      uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
+      env:
+        M6D_PROJECT: ${{ inputs.project || github.event.repository.name }}
+        M6D_OPEN_PRS: ${{ steps.open-prs.outputs.numbers }}
+      with:
+        host: ${{ inputs.ssh-host }}
+        port: ${{ inputs.ssh-port }}
+        username: ${{ inputs.ssh-username }}
+        key: ${{ inputs.ssh-key }}
+        command_timeout: ${{ inputs.command-timeout }}
+        version: 1.8.4
+        envs: M6D_PROJECT,M6D_OPEN_PRS
+        script: |
+          set -e
+          cd "$HOME/ci"
+          for dir in environments/"$M6D_PROJECT"_*; do
+            pr=${dir#environments/"$M6D_PROJECT"_}
+            case $pr in ''|*[!0-9]*) continue ;; esac
+            case " $M6D_OPEN_PRS " in *" $pr "*) continue ;; esac
+            "$HOME/.bun/bin/bun" src/index.ts teardown "$M6D_PROJECT" "$pr" ||
+              echo "::warning::Could not tear down the $M6D_PROJECT preview of #$pr"
+          done
+
     - name: Check out pull request
       if: github.event.action != 'closed'
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -220,25 +281,6 @@ runs:
               body
             });
           }
-
-    - name: Tear down preview
-      if: github.event.action == 'closed'
-      uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
-      env:
-        M6D_PROJECT: ${{ inputs.project || github.event.repository.name }}
-        M6D_PR_NUMBER: ${{ github.event.pull_request.number }}
-      with:
-        host: ${{ inputs.ssh-host }}
-        port: ${{ inputs.ssh-port }}
-        username: ${{ inputs.ssh-username }}
-        key: ${{ inputs.ssh-key }}
-        command_timeout: ${{ inputs.command-timeout }}
-        version: 1.8.4
-        envs: M6D_PROJECT,M6D_PR_NUMBER
-        script: |
-          set -e
-          cd "$HOME/ci"
-          "$HOME/.bun/bin/bun" src/index.ts teardown "$M6D_PROJECT" "$M6D_PR_NUMBER"
 
 branding:
   icon: box

@@ -1,6 +1,6 @@
 # M6D Preview
 
-A composite GitHub Action that builds immutable pull-request images, deploys them through the standard M6D CI package, verifies the preview, comments on the pull request, and tears the preview down when the pull request closes.
+A composite GitHub Action that builds immutable pull-request images, deploys them through the standard M6D CI package, verifies the preview, comments on the pull request, and tears down the previews of closed pull requests.
 
 ## Usage
 
@@ -70,7 +70,9 @@ cd ~/ci
 ~/.bun/bin/bun src/index.ts teardown <project> <pr-number>
 ```
 
-The CI package must deploy the supplied image tag exactly.
+GitHub skips `pull_request` workflows while a pull request has merge conflicts, so a conflicted pull request can close without that run. Every run therefore also runs `teardown` for each preview in `~/ci/environments/<project>_<pr-number>` whose pull request is no longer open.
+
+The CI package must deploy the supplied image tag exactly and keep each preview in `environments/<project>_<pr-number>`.
 
 ## Requirements
 
