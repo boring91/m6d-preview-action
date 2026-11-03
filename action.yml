@@ -203,6 +203,21 @@ runs:
             tag: process.env.M6D_IMAGE_TAG
           });
 
+    # The PR's .preview folder overrides the project's files on the server.
+    # Replacing the uploaded copy on every push drops the files a PR deleted.
+    - name: Upload preview files
+      if: github.event.action != 'closed' && hashFiles('.preview/**') != ''
+      uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1.0.0
+      with:
+        host: ${{ inputs.ssh-host }}
+        port: ${{ inputs.ssh-port }}
+        username: ${{ inputs.ssh-username }}
+        key: ${{ inputs.ssh-key }}
+        source: .preview
+        target: ci/environments/${{ inputs.project || github.event.repository.name }}_${{ github.event.pull_request.number }}/.preview
+        strip_components: 1
+        rm: true
+
     - name: Deploy preview
       if: github.event.action != 'closed'
       uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
@@ -210,6 +225,7 @@ runs:
         M6D_PROJECT: ${{ inputs.project || github.event.repository.name }}
         M6D_PR_NUMBER: ${{ github.event.pull_request.number }}
         M6D_IMAGE_TAG: pr-${{ github.event.pull_request.number }}-${{ github.sha }}
+        M6D_HAS_PREVIEW_FILES: ${{ hashFiles('.preview/**') != '' }}
       with:
         host: ${{ inputs.ssh-host }}
         port: ${{ inputs.ssh-port }}
@@ -217,11 +233,40 @@ runs:
         key: ${{ inputs.ssh-key }}
         command_timeout: ${{ inputs.command-timeout }}
         version: 1.8.4
-        envs: M6D_PROJECT,M6D_PR_NUMBER,M6D_IMAGE_TAG
+        envs: M6D_PROJECT,M6D_PR_NUMBER,M6D_IMAGE_TAG,M6D_HAS_PREVIEW_FILES
         script: |
           set -e
           cd "$HOME/ci"
+          # A PR that deleted its .preview folder falls back to the server's files.
+          if [ "$M6D_HAS_PREVIEW_FILES" != true ]; then
+            rm -rf "environments/${M6D_PROJECT}_${M6D_PR_NUMBER}/.preview"
+          fi
           "$HOME/.bun/bin/bun" src/index.ts setup "$M6D_PROJECT" "$M6D_PR_NUMBER" "$M6D_IMAGE_TAG"
+
+    # A separate step, so the captured output holds only the URLs and not the
+    # whole deploy log. Failing to read them only costs the comment its extra
+    # route links.
+    - name: Read preview URLs
+      id: urls
+      if: github.event.action != 'closed'
+      uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
+      env:
+        M6D_PROJECT: ${{ inputs.project || github.event.repository.name }}
+        M6D_PR_NUMBER: ${{ github.event.pull_request.number }}
+      with:
+        host: ${{ inputs.ssh-host }}
+        port: ${{ inputs.ssh-port }}
+        username: ${{ inputs.ssh-username }}
+        key: ${{ inputs.ssh-key }}
+        command_timeout: ${{ inputs.command-timeout }}
+        version: 1.8.4
+        capture_stdout: true
+        envs: M6D_PROJECT,M6D_PR_NUMBER
+        script: |
+          set -e
+          cd "$HOME/ci"
+          "$HOME/.bun/bin/bun" src/index.ts urls "$M6D_PROJECT" "$M6D_PR_NUMBER" ||
+            echo "::warning::Could not read the preview URLs of $M6D_PROJECT #$M6D_PR_NUMBER"
 
     - name: Wait for preview health
       if: github.event.action != 'closed'
@@ -249,14 +294,23 @@ runs:
         M6D_PR_NUMBER: ${{ github.event.pull_request.number }}
         M6D_IMAGE_TAG: pr-${{ github.event.pull_request.number }}-${{ github.sha }}
         M6D_PREVIEW_URL: https://pr-${{ github.event.pull_request.number }}-${{ inputs.project || github.event.repository.name }}.ci.syscodeia.ae
+        M6D_URLS_OUTPUT: ${{ steps.urls.outputs.stdout }}
       with:
         github-token: ${{ github.token }}
         script: |
+          // The main URL comes first, then one per extra route, named by the
+          // route in front of its domain: https://cortex-pr-12-masar.…
+          const urls = [...new Set((process.env.M6D_URLS_OUTPUT ?? '').match(/https:\/\/\S+/g) ?? [])];
+          const [main = process.env.M6D_PREVIEW_URL, ...routes] = urls;
+          const links = [
+            `[Open ${process.env.M6D_PROJECT} preview](${main})`,
+            ...routes.map(url => `[Open ${new URL(url).hostname.split('-pr-')[0]}](${url})`)
+          ];
           const marker = `<!-- m6d-preview:${process.env.M6D_PROJECT} -->`;
           const body = `${marker}
           🚀 **Preview ready**
 
-          [Open ${process.env.M6D_PROJECT} preview](${process.env.M6D_PREVIEW_URL})
+          ${links.join('\n\n')}
 
           Image tag: \`${process.env.M6D_IMAGE_TAG}\``;
           const issue_number = Number(process.env.M6D_PR_NUMBER);

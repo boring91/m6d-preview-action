@@ -56,12 +56,19 @@ The caller must declare `runs-on`, `permissions`, and `concurrency` because GitH
 
 `images` is a JSON array. Every item requires `name`, `image`, `context`, and `dockerfile`. `build_args` is an optional newline-separated string. Images are built sequentially and pushed with one immutable tag: `pr-<number>-<commit-sha>`.
 
-On preview creation, the action runs:
+On preview creation, the action uploads the repository's `.preview/` folder, when it has one, to `~/ci/environments/<project>_<pr-number>/.preview`, then runs:
 
 ```text
 cd ~/ci
 ~/.bun/bin/bun src/index.ts setup <project> <pr-number> <image-tag>
+~/.bun/bin/bun src/index.ts urls <project> <pr-number>
 ```
+
+The PR comment links every URL `urls` prints: the main domain first, then one per extra route.
+
+## Preview folder
+
+A `.preview/` folder at the repository root overrides the project's files on the server for that pull request: `config.json`, `docker-compose.yml`, `.env`, and seed files. Secrets stay in the server's `.env`. [pr-environment](https://github.com/boring91/pr-environment#preview-files) documents the format.
 
 On pull-request closure, it runs:
 
